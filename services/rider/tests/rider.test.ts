@@ -1,10 +1,8 @@
 /**
  * RIDER SERVICE — Tests
- * 1. Unit: role guard (rider only), toggle availability validation
- * 2. Integration: Rider geospatial $near query (mongodb-memory-server)
- * 3. Race condition: concurrent acceptOrder — only one rider wins
+ * Uses MONGO_TEST_URI (Docker MongoDB) — no binary download.
+ * Run: MONGO_TEST_URI=mongodb://127.0.0.1:27018/rider_test npm test
  */
-import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
 import express from "express";
@@ -36,6 +34,9 @@ jest.mock("../src/config/rabbitmq", () => ({
 import { Rider } from "../src/model/Rider";
 import riderRoutes from "../src/routes/rider";
 
+const MONGO_URI =
+  process.env.MONGO_TEST_URI || "mongodb://127.0.0.1:27018/rider_test";
+
 const buildApp = () => {
   const app = express();
   app.use(express.json());
@@ -43,7 +44,6 @@ const buildApp = () => {
   return app;
 };
 
-let mongod: MongoMemoryServer;
 let app: express.Express;
 
 const makeUser = (overrides: any = {}) => ({
@@ -62,15 +62,14 @@ const signToken = (user: object) =>
 const authHeader = (user: object) => ({ Authorization: `Bearer ${signToken(user)}` });
 
 beforeAll(async () => {
-  mongod = await MongoMemoryServer.create();
-  await mongoose.connect(mongod.getUri());
+  await mongoose.connect(MONGO_URI);
   app = buildApp();
-}, 300000);  // 5 min — MongoDB binary download on first run
+}, 30000);
 
 afterAll(async () => {
+  await mongoose.connection.dropDatabase();
   await mongoose.disconnect();
-  await mongod.stop();
-}, 30000);
+}, 15000);
 
 afterEach(async () => {
   if (mongoose.connection.readyState !== 1) return;
@@ -78,7 +77,7 @@ afterEach(async () => {
     await col.deleteMany({});
   }
   jest.clearAllMocks();
-}, 15000);
+}, 10000);
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe("PUT /api/rider/availability — toggleRiderAvailability", () => {
@@ -118,15 +117,11 @@ describe("PUT /api/rider/availability — toggleRiderAvailability", () => {
   it("returns 403 when unverified rider tries to go online", async () => {
     const user = makeUser({ role: "rider" });
     await Rider.create({
-      userId: user._id,
-      picture: "img",
-      phoneNumber: "9999999999",
-      aadharNumber: "1234-5678-9012",
-      drivingLicenseNumber: "DL-1234",
+      userId: user._id, picture: "img", phoneNumber: "9999999999",
+      aadharNumber: "1234-5678-9012", drivingLicenseNumber: "DL-1234",
       isVerified: false,
       location: { type: "Point", coordinates: [77.1, 28.6] },
     });
-
     const res = await request(app)
       .put("/api/rider/availability")
       .set(authHeader(user))
@@ -138,16 +133,11 @@ describe("PUT /api/rider/availability — toggleRiderAvailability", () => {
   it("allows verified rider to go online and updates location", async () => {
     const user = makeUser({ role: "rider" });
     await Rider.create({
-      userId: user._id,
-      picture: "img",
-      phoneNumber: "9999999999",
-      aadharNumber: "1234-5678-9012",
-      drivingLicenseNumber: "DL-1234",
-      isVerified: true,
-      isAvailble: false,
+      userId: user._id, picture: "img", phoneNumber: "9999999999",
+      aadharNumber: "1234-5678-9012", drivingLicenseNumber: "DL-1234",
+      isVerified: true, isAvailble: false,
       location: { type: "Point", coordinates: [77.1, 28.6] },
     });
-
     const res = await request(app)
       .put("/api/rider/availability")
       .set(authHeader(user))
@@ -162,9 +152,7 @@ describe("PUT /api/rider/availability — toggleRiderAvailability", () => {
 describe("GET /api/rider/profile — fetchMyProfile", () => {
   it("returns null for rider with no profile", async () => {
     const user = makeUser({ role: "rider" });
-    const res = await request(app)
-      .get("/api/rider/profile")
-      .set(authHeader(user));
+    const res = await request(app).get("/api/rider/profile").set(authHeader(user));
     expect(res.status).toBe(200);
     expect(res.body).toBeNull();
   });
@@ -172,18 +160,12 @@ describe("GET /api/rider/profile — fetchMyProfile", () => {
   it("returns the rider profile when it exists", async () => {
     const user = makeUser({ role: "rider" });
     await Rider.create({
-      userId: user._id,
-      picture: "img",
-      phoneNumber: "9876543210",
-      aadharNumber: "0000-1111-2222",
-      drivingLicenseNumber: "DL-9876",
+      userId: user._id, picture: "img", phoneNumber: "9876543210",
+      aadharNumber: "0000-1111-2222", drivingLicenseNumber: "DL-9876",
       isVerified: true,
       location: { type: "Point", coordinates: [77.5, 28.7] },
     });
-
-    const res = await request(app)
-      .get("/api/rider/profile")
-      .set(authHeader(user));
+    const res = await request(app).get("/api/rider/profile").set(authHeader(user));
     expect(res.status).toBe(200);
     expect(res.body.phoneNumber).toBe("9876543210");
     expect(res.body.isVerified).toBe(true);
@@ -192,55 +174,30 @@ describe("GET /api/rider/profile — fetchMyProfile", () => {
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe("Geospatial: Rider $near query — only riders within 500m returned", () => {
-  /**
-   * Reference point: { lng: 77.2090, lat: 28.6139 } (Connaught Place, Delhi)
-   * Rider A: 100m away  → should appear
-   * Rider B: 400m away  → should appear
-   * Rider C: 1000m away → should NOT appear (outside 500m)
-   */
-
   const REFERENCE = { lng: 77.209, lat: 28.6139 };
-
-  // Approximately 100m north (0.0009° lat ≈ 100m)
+  // ~100m north
   const RIDER_A = { lng: 77.209, lat: 28.6148 };
-  // Approximately 400m north
+  // ~400m north
   const RIDER_B = { lng: 77.209, lat: 28.6175 };
-  // Approximately 1000m north
+  // ~1000m north — outside radius
   const RIDER_C = { lng: 77.209, lat: 28.6229 };
 
   beforeEach(async () => {
-    // Ensure 2dsphere index is created
     await Rider.createIndexes();
-
     await Rider.create([
       {
-        userId: "rider-a",
-        picture: "img",
-        phoneNumber: "111",
-        aadharNumber: "1111",
-        drivingLicenseNumber: "DL-A",
-        isVerified: true,
-        isAvailble: true,
+        userId: "rider-a", picture: "img", phoneNumber: "111", aadharNumber: "1111",
+        drivingLicenseNumber: "DL-A", isVerified: true, isAvailble: true,
         location: { type: "Point", coordinates: [RIDER_A.lng, RIDER_A.lat] },
       },
       {
-        userId: "rider-b",
-        picture: "img",
-        phoneNumber: "222",
-        aadharNumber: "2222",
-        drivingLicenseNumber: "DL-B",
-        isVerified: true,
-        isAvailble: true,
+        userId: "rider-b", picture: "img", phoneNumber: "222", aadharNumber: "2222",
+        drivingLicenseNumber: "DL-B", isVerified: true, isAvailble: true,
         location: { type: "Point", coordinates: [RIDER_B.lng, RIDER_B.lat] },
       },
       {
-        userId: "rider-c",
-        picture: "img",
-        phoneNumber: "333",
-        aadharNumber: "3333",
-        drivingLicenseNumber: "DL-C",
-        isVerified: true,
-        isAvailble: true,
+        userId: "rider-c", picture: "img", phoneNumber: "333", aadharNumber: "3333",
+        drivingLicenseNumber: "DL-C", isVerified: true, isAvailble: true,
         location: { type: "Point", coordinates: [RIDER_C.lng, RIDER_C.lat] },
       },
     ]);
@@ -248,8 +205,7 @@ describe("Geospatial: Rider $near query — only riders within 500m returned", (
 
   it("returns only riders within 500m radius", async () => {
     const riders = await Rider.find({
-      isAvailble: true,
-      isVerified: true,
+      isAvailble: true, isVerified: true,
       location: {
         $near: {
           $geometry: { type: "Point", coordinates: [REFERENCE.lng, REFERENCE.lat] },
@@ -257,17 +213,15 @@ describe("Geospatial: Rider $near query — only riders within 500m returned", (
         },
       },
     });
-
     const userIds = riders.map((r) => r.userId);
     expect(userIds).toContain("rider-a");
     expect(userIds).toContain("rider-b");
-    expect(userIds).not.toContain("rider-c"); // 1000m away
+    expect(userIds).not.toContain("rider-c");
   });
 
-  it("returns results in ascending distance order", async () => {
+  it("returns results in ascending distance order ($near is closest-first)", async () => {
     const riders = await Rider.find({
-      isAvailble: true,
-      isVerified: true,
+      isAvailble: true, isVerified: true,
       location: {
         $near: {
           $geometry: { type: "Point", coordinates: [REFERENCE.lng, REFERENCE.lat] },
@@ -275,30 +229,21 @@ describe("Geospatial: Rider $near query — only riders within 500m returned", (
         },
       },
     });
-
-    // $near returns closest first
     expect(riders.length).toBeGreaterThanOrEqual(2);
     if (riders.length >= 2) {
-      expect(riders[0]!.userId).toBe("rider-a"); // closer
-      expect(riders[1]!.userId).toBe("rider-b"); // farther
+      expect(riders[0]!.userId).toBe("rider-a");
+      expect(riders[1]!.userId).toBe("rider-b");
     }
   });
 
-  it("excludes offline (isAvailble=false) riders even if within range", async () => {
+  it("excludes offline riders even if within radius", async () => {
     await Rider.create({
-      userId: "rider-offline",
-      picture: "img",
-      phoneNumber: "444",
-      aadharNumber: "4444",
-      drivingLicenseNumber: "DL-OFF",
-      isVerified: true,
-      isAvailble: false, // offline
-      location: { type: "Point", coordinates: [77.209, 28.6141] }, // ~22m away
+      userId: "rider-offline", picture: "img", phoneNumber: "444", aadharNumber: "4444",
+      drivingLicenseNumber: "DL-OFF", isVerified: true, isAvailble: false,
+      location: { type: "Point", coordinates: [77.209, 28.6141] },
     });
-
     const riders = await Rider.find({
-      isAvailble: true,
-      isVerified: true,
+      isAvailble: true, isVerified: true,
       location: {
         $near: {
           $geometry: { type: "Point", coordinates: [REFERENCE.lng, REFERENCE.lat] },
@@ -306,7 +251,6 @@ describe("Geospatial: Rider $near query — only riders within 500m returned", (
         },
       },
     });
-
     expect(riders.map((r) => r.userId)).not.toContain("rider-offline");
   });
 });

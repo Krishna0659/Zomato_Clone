@@ -16,5 +16,5 @@ module.exports = {
   },
   collectCoverageFrom: ["src/**/*.ts", "!src/index.ts"],
   coverageThreshold: { global: { lines: 80 } },
-  testTimeout: 300000,
+  testTimeout: 30000,
 };

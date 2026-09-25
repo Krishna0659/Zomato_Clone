@@ -1,10 +1,9 @@
 /**
  * RESTAURANT SERVICE — Integration Tests
- * Supertest + mongodb-memory-server
- * Tests: Cart TTL/unique-index, Order creation, status transitions, race conditions
+ * Uses MONGO_TEST_URI env var (Docker MongoDB) — no binary download needed.
+ * Run: MONGO_TEST_URI=mongodb://127.0.0.1:27018/restaurant_test npm test
  */
 import request from "supertest";
-import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
 import express from "express";
@@ -15,7 +14,6 @@ process.env.INTERNAL_SERVICE_KEY = "test_internal_key";
 process.env.REALTIME_SERVICE = "http://localhost:5004";
 process.env.UTILS_SERVICE = "http://localhost:5002";
 
-// Mock axios so integration tests don't hit real services
 jest.mock("axios", () => ({
   default: {
     post: jest.fn().mockResolvedValue({ data: {} }),
@@ -46,9 +44,10 @@ import addressRoutes from "../src/routes/address";
 import orderRoutes from "../src/routes/order";
 import Cart from "../src/models/Cart";
 import Order from "../src/models/Order";
-import Restaurant from "../src/models/Restaurant";
-import MenuItem from "../src/models/MenuItems";
 import Address from "../src/models/Address";
+
+const MONGO_URI =
+  process.env.MONGO_TEST_URI || "mongodb://127.0.0.1:27018/restaurant_test";
 
 const buildApp = () => {
   const app = express();
@@ -62,7 +61,6 @@ const buildApp = () => {
   return app;
 };
 
-let mongod: MongoMemoryServer;
 let app: express.Express;
 
 const makeUser = (overrides: any = {}) => ({
@@ -81,15 +79,14 @@ const signToken = (user: object) =>
 const authHeader = (user: object) => ({ Authorization: `Bearer ${signToken(user)}` });
 
 beforeAll(async () => {
-  mongod = await MongoMemoryServer.create();
-  await mongoose.connect(mongod.getUri());
+  await mongoose.connect(MONGO_URI);
   app = buildApp();
-}, 300000);  // 5 min — MongoDB binary download on first run
+}, 30000);
 
 afterAll(async () => {
+  await mongoose.connection.dropDatabase();
   await mongoose.disconnect();
-  await mongod.stop();
-}, 30000);
+}, 15000);
 
 afterEach(async () => {
   if (mongoose.connection.readyState !== 1) return;
@@ -97,7 +94,7 @@ afterEach(async () => {
     await col.deleteMany({});
   }
   jest.clearAllMocks();
-}, 15000);
+}, 10000);
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe("GET /api/cart — fetchMyCart", () => {
@@ -108,9 +105,7 @@ describe("GET /api/cart — fetchMyCart", () => {
 
   it("returns empty cart for a new user", async () => {
     const user = makeUser();
-    const res = await request(app)
-      .get("/api/cart")
-      .set(authHeader(user));
+    const res = await request(app).get("/api/cart").set(authHeader(user));
     expect(res.status).toBe(200);
     expect(res.body.cart).toHaveLength(0);
     expect(res.body.cartLength).toBe(0);
@@ -134,35 +129,28 @@ describe("POST /api/cart — addToCart", () => {
     expect(res.status).toBe(400);
   });
 
-  it("adds item to cart and increments quantity on duplicate", async () => {
+  it("Cart compound unique index prevents duplicate raw inserts", async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const restaurantId = new mongoose.Types.ObjectId();
+    const itemId = new mongoose.Types.ObjectId();
+    await Cart.createIndexes();
+    await Cart.create({ userId, restaurantId, itemId });
+    await expect(Cart.create({ userId, restaurantId, itemId }))
+      .rejects.toThrow(/duplicate key/i);
+  });
+
+  it("upsert increments quantity on same item", async () => {
     const user = makeUser();
     const restId = new mongoose.Types.ObjectId();
     const itemId = new mongoose.Types.ObjectId();
-
-    // Seed via model directly
     await Cart.create({ userId: user._id, restaurantId: restId, itemId });
-
-    // Second add should increment via findOneAndUpdate
     await Cart.findOneAndUpdate(
       { userId: user._id, restaurantId: restId, itemId },
       { $inc: { quauntity: 1 } },
       { upsert: true, new: true }
     );
-
     const cart = await Cart.findOne({ userId: user._id });
     expect(cart?.quauntity).toBe(2);
-  });
-
-  it("Cart compound unique index prevents duplicate raw inserts", async () => {
-    const userId = new mongoose.Types.ObjectId();
-    const restaurantId = new mongoose.Types.ObjectId();
-    const itemId = new mongoose.Types.ObjectId();
-
-    await Cart.create({ userId, restaurantId, itemId });
-
-    await expect(
-      Cart.create({ userId, restaurantId, itemId })
-    ).rejects.toThrow(/duplicate key/i);
   });
 });
 
@@ -191,7 +179,6 @@ describe("POST /api/order/new — createOrder validation", () => {
       mobile: 9999999999,
       location: { type: "Point", coordinates: [77.1, 28.6] },
     });
-
     const res = await request(app)
       .post("/api/order/new")
       .set(authHeader(user))
@@ -218,25 +205,16 @@ describe("GET /api/order/payment/:id — fetchOrderForPayment", () => {
     expect(res.status).toBe(404);
   });
 
-  it("returns order amount for pending payment order", async () => {
+  it("returns order amount for a pending payment order", async () => {
     const order = await Order.create({
-      userId: "u1",
-      restaurantId: "r1",
-      restaurantName: "Test",
-      distance: 2,
-      riderAmount: 34,
-      items: [],
-      subtotal: 200,
-      deliveryFee: 0,
-      platfromFee: 7,
-      totalAmount: 207,
-      addressId: "addr1",
+      userId: "u1", restaurantId: "r1", restaurantName: "Test",
+      distance: 2, riderAmount: 34, items: [],
+      subtotal: 200, deliveryFee: 0, platfromFee: 7, totalAmount: 207,
+      addressId: "a1",
       deliveryAddress: { fromattedAddress: "Test St", mobile: 9999999999, latitude: 28.6, longitude: 77.1 },
-      paymentMethod: "razorpay",
-      paymentStatus: "pending",
+      paymentMethod: "razorpay", paymentStatus: "pending",
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
     });
-
     const res = await request(app)
       .get(`/api/order/payment/${order._id}`)
       .set("x-internal-key", process.env.INTERNAL_SERVICE_KEY!);
@@ -246,22 +224,13 @@ describe("GET /api/order/payment/:id — fetchOrderForPayment", () => {
 
   it("returns 400 for already-paid order", async () => {
     const order = await Order.create({
-      userId: "u1",
-      restaurantId: "r1",
-      restaurantName: "Test",
-      distance: 2,
-      riderAmount: 34,
-      items: [],
-      subtotal: 200,
-      deliveryFee: 0,
-      platfromFee: 7,
-      totalAmount: 207,
-      addressId: "addr1",
+      userId: "u1", restaurantId: "r1", restaurantName: "Test",
+      distance: 2, riderAmount: 34, items: [],
+      subtotal: 200, deliveryFee: 0, platfromFee: 7, totalAmount: 207,
+      addressId: "a1",
       deliveryAddress: { fromattedAddress: "Test St", mobile: 9999999999, latitude: 28.6, longitude: 77.1 },
-      paymentMethod: "razorpay",
-      paymentStatus: "paid",
+      paymentMethod: "razorpay", paymentStatus: "paid",
     });
-
     const res = await request(app)
       .get(`/api/order/payment/${order._id}`)
       .set("x-internal-key", process.env.INTERNAL_SERVICE_KEY!);
@@ -271,50 +240,39 @@ describe("GET /api/order/payment/:id — fetchOrderForPayment", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-describe("PUT /api/order/assign/rider — assignRiderToOrder (race condition)", () => {
-  it("two concurrent rider assignments: exactly one succeeds", async () => {
+describe("Atomic rider assignment — race condition test", () => {
+  it("two concurrent riders: exactly one wins the order", async () => {
     const order = await Order.create({
-      userId: "u1",
-      restaurantId: "r1",
-      restaurantName: "Test",
-      distance: 2,
-      riderAmount: 34,
-      riderId: null,
-      items: [],
-      subtotal: 200,
-      deliveryFee: 0,
-      platfromFee: 7,
-      totalAmount: 207,
+      userId: "u1", restaurantId: "r1", restaurantName: "Test",
+      distance: 2, riderAmount: 34, riderId: null, items: [],
+      subtotal: 200, deliveryFee: 0, platfromFee: 7, totalAmount: 207,
       addressId: "a1",
       deliveryAddress: { fromattedAddress: "Test", mobile: 9999999999, latitude: 28.6, longitude: 77.1 },
-      paymentMethod: "razorpay",
-      paymentStatus: "paid",
-      status: "ready_for_rider",
+      paymentMethod: "razorpay", paymentStatus: "paid", status: "ready_for_rider",
     });
 
-    // findOneAndUpdate with riderId: null — atomic, only one wins
-    const rider1Id = new mongoose.Types.ObjectId().toString();
-    const rider2Id = new mongoose.Types.ObjectId().toString();
+    const rider1 = new mongoose.Types.ObjectId().toString();
+    const rider2 = new mongoose.Types.ObjectId().toString();
 
-    const [result1, result2] = await Promise.all([
+    const [r1, r2] = await Promise.all([
       Order.findOneAndUpdate(
         { _id: order._id, riderId: null },
-        { riderId: rider1Id, status: "rider_assigned" },
+        { riderId: rider1, status: "rider_assigned" },
         { new: true }
       ),
       Order.findOneAndUpdate(
         { _id: order._id, riderId: null },
-        { riderId: rider2Id, status: "rider_assigned" },
+        { riderId: rider2, status: "rider_assigned" },
         { new: true }
       ),
     ]);
 
-    const winners = [result1, result2].filter(Boolean);
+    // Exactly one findOneAndUpdate returns a document; the other sees riderId already set
+    const winners = [r1, r2].filter(Boolean);
     expect(winners).toHaveLength(1);
 
-    const finalOrder = await Order.findById(order._id);
-    // riderId is set to exactly one of the two riders
-    expect([rider1Id, rider2Id]).toContain(finalOrder?.riderId);
+    const final = await Order.findById(order._id);
+    expect([rider1, rider2]).toContain(final?.riderId);
   });
 });
 
@@ -327,24 +285,17 @@ describe("GET /api/order/myorder — getMyOrders", () => {
 
   it("returns only paid orders for the authenticated user", async () => {
     const user = makeUser();
-
-    // Create paid and pending orders
+    const base = {
+      userId: user._id, restaurantId: "r1", restaurantName: "R1",
+      distance: 1, riderAmount: 17, items: [],
+      subtotal: 100, deliveryFee: 49, platfromFee: 7, totalAmount: 156,
+      addressId: "a1",
+      deliveryAddress: { fromattedAddress: "T", mobile: 9999999999, latitude: 28.6, longitude: 77.1 },
+    };
     await Order.create([
-      {
-        userId: user._id, restaurantId: "r1", restaurantName: "R1", distance: 1, riderAmount: 17,
-        items: [], subtotal: 100, deliveryFee: 49, platfromFee: 7, totalAmount: 156,
-        addressId: "a1", deliveryAddress: { fromattedAddress: "Test", mobile: 9999999999, latitude: 28.6, longitude: 77.1 },
-        paymentMethod: "razorpay", paymentStatus: "paid",
-      },
-      {
-        userId: user._id, restaurantId: "r1", restaurantName: "R1", distance: 1, riderAmount: 17,
-        items: [], subtotal: 100, deliveryFee: 49, platfromFee: 7, totalAmount: 156,
-        addressId: "a1", deliveryAddress: { fromattedAddress: "Test", mobile: 9999999999, latitude: 28.6, longitude: 77.1 },
-        paymentMethod: "stripe", paymentStatus: "pending",
-        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
-      },
+      { ...base, paymentMethod: "razorpay", paymentStatus: "paid" },
+      { ...base, paymentMethod: "stripe", paymentStatus: "pending", expiresAt: new Date(Date.now() + 900000) },
     ]);
-
     const res = await request(app)
       .get("/api/order/myorder")
       .set(authHeader(user));

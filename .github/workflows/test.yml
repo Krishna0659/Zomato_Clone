@@ -34,6 +34,16 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand({ping:1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -54,6 +64,7 @@ jobs:
         env:
           JWT_SEC: test_jwt_secret_ci
           INTERNAL_SERVICE_KEY: test_internal_key_ci
+          MONGO_TEST_URI: mongodb://127.0.0.1:27017/${{ matrix.service }}_test
           RABBITMQ_URL: amqp://guest:guest@localhost:5672
           PAYMENT_QUEUE: payment_event
           RIDER_QUEUE: rider_queue
