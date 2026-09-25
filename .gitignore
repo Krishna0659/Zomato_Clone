@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build outputs
+dist/
+**/dist/
+
+# Environment files (never commit real secrets)
+# .env files are committed with placeholder values only
+# *.env.local
+# *.env.production
+
+# Coverage
+coverage/
+**/coverage/
+*.lcov
+
+# k6 output
+k6-summary.txt
+k6-results.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# MongoDB memory server cache
+.cache/
+**/.cache/

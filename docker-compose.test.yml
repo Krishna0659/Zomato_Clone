@@ -1,0 +1,40 @@
+version: "3.9"
+
+# ── Test infrastructure: MongoDB + RabbitMQ ────────────────────────────────
+# Usage: docker-compose -f docker-compose.test.yml up -d
+#        npm test (inside each service)
+#        docker-compose -f docker-compose.test.yml down -v
+
+services:
+  mongo-test:
+    image: mongo:7.0
+    container_name: zomato_mongo_test
+    ports:
+      - "27018:27017"
+    environment:
+      MONGO_INITDB_DATABASE: Zomato_Clone_Test
+    volumes:
+      - mongo_test_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq-test:
+    image: rabbitmq:3-management
+    container_name: zomato_rabbitmq_test
+    ports:
+      - "5673:5672"       # AMQP (test port offset by 1)
+      - "15673:15672"     # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin123
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mongo_test_data:
