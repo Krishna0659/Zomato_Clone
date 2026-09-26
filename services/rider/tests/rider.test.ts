@@ -14,13 +14,18 @@ process.env.RESTAURANT_SERVICE = "http://localhost:5001";
 process.env.REALTIME_SERVICE = "http://localhost:5004";
 process.env.UTILS_SERVICE = "http://localhost:5002";
 
-jest.mock("axios", () => ({
-  default: {
-    post: jest.fn().mockResolvedValue({ data: { success: true } }),
+jest.mock("axios", () => {
+  const mAxios = {
+    post: jest.fn().mockResolvedValue({ data: { success: true, url: "http://image.com" } }),
     get: jest.fn().mockResolvedValue({ data: {} }),
     put: jest.fn().mockResolvedValue({ data: { success: true } }),
-  },
-}));
+  };
+  return {
+    __esModule: true,
+    default: mAxios,
+    ...mAxios,
+  };
+});
 
 jest.mock("../src/config/rabbitmq", () => ({
   connectRabbitMQ: jest.fn().mockResolvedValue(undefined),
@@ -35,7 +40,7 @@ import { Rider } from "../src/model/Rider";
 import riderRoutes from "../src/routes/rider";
 
 const MONGO_URI =
-  process.env.MONGO_TEST_URI || "mongodb://127.0.0.1:27018/rider_test";
+  process.env.MONGO_TEST_URI || "mongodb://127.0.0.1:27018/rider_test?directConnection=true";
 
 const buildApp = () => {
   const app = express();
@@ -62,12 +67,28 @@ const signToken = (user: object) =>
 const authHeader = (user: object) => ({ Authorization: `Bearer ${signToken(user)}` });
 
 beforeAll(async () => {
-  await mongoose.connect(MONGO_URI);
+  let retries = 5;
+  while (retries > 0) {
+    try {
+      await mongoose.connect(process.env.MONGO_TEST_URI || "mongodb://127.0.0.1:27018/rider_test", {
+        serverSelectionTimeoutMS: 5000,
+        family: 4
+      });
+      break;
+    } catch (err) {
+      retries -= 1;
+      console.log(`Mongoose connection failed. Retries left: ${retries}, error: ${(err as Error).message}`);
+      if (retries === 0) throw err;
+      await new Promise((res) => setTimeout(res, 2000));
+    }
+  }
   app = buildApp();
-}, 30000);
+}, 120000);
 
 afterAll(async () => {
-  await mongoose.connection.dropDatabase();
+  if (mongoose.connection.readyState === 1) {
+    await mongoose.connection.dropDatabase();
+  }
   await mongoose.disconnect();
 }, 15000);
 
@@ -80,16 +101,16 @@ afterEach(async () => {
 }, 10000);
 
 // ═══════════════════════════════════════════════════════════════════════════
-describe("PUT /api/rider/availability — toggleRiderAvailability", () => {
+describe("PUT /api/rider/toggle — toggleRiderAvailability", () => {
   it("returns 401 without token", async () => {
-    const res = await request(app).put("/api/rider/availability").send({});
+    const res = await request(app).patch("/api/rider/toggle").send({});
     expect(res.status).toBe(401);
   });
 
   it("returns 403 for non-rider role", async () => {
     const customer = makeUser({ role: "customer" });
     const res = await request(app)
-      .put("/api/rider/availability")
+      .patch("/api/rider/toggle")
       .set(authHeader(customer))
       .send({ isAvailble: true, latitude: 28.6, longitude: 77.1 });
     expect(res.status).toBe(403);
@@ -98,7 +119,7 @@ describe("PUT /api/rider/availability — toggleRiderAvailability", () => {
   it("returns 400 when isAvailble is not boolean", async () => {
     const rider = makeUser({ role: "rider" });
     const res = await request(app)
-      .put("/api/rider/availability")
+      .patch("/api/rider/toggle")
       .set(authHeader(rider))
       .send({ isAvailble: "yes", latitude: 28.6, longitude: 77.1 });
     expect(res.status).toBe(400);
@@ -108,7 +129,7 @@ describe("PUT /api/rider/availability — toggleRiderAvailability", () => {
   it("returns 404 when rider profile does not exist", async () => {
     const rider = makeUser({ role: "rider" });
     const res = await request(app)
-      .put("/api/rider/availability")
+      .patch("/api/rider/toggle")
       .set(authHeader(rider))
       .send({ isAvailble: false, latitude: 28.6, longitude: 77.1 });
     expect(res.status).toBe(404);
@@ -123,7 +144,7 @@ describe("PUT /api/rider/availability — toggleRiderAvailability", () => {
       location: { type: "Point", coordinates: [77.1, 28.6] },
     });
     const res = await request(app)
-      .put("/api/rider/availability")
+      .patch("/api/rider/toggle")
       .set(authHeader(user))
       .send({ isAvailble: true, latitude: 28.6, longitude: 77.1 });
     expect(res.status).toBe(403);
@@ -139,7 +160,7 @@ describe("PUT /api/rider/availability — toggleRiderAvailability", () => {
       location: { type: "Point", coordinates: [77.1, 28.6] },
     });
     const res = await request(app)
-      .put("/api/rider/availability")
+      .patch("/api/rider/toggle")
       .set(authHeader(user))
       .send({ isAvailble: true, latitude: 28.7, longitude: 77.2 });
     expect(res.status).toBe(200);
@@ -149,10 +170,10 @@ describe("PUT /api/rider/availability — toggleRiderAvailability", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-describe("GET /api/rider/profile — fetchMyProfile", () => {
+describe("GET /api/rider/myprofile — fetchMyProfile", () => {
   it("returns null for rider with no profile", async () => {
     const user = makeUser({ role: "rider" });
-    const res = await request(app).get("/api/rider/profile").set(authHeader(user));
+    const res = await request(app).get("/api/rider/myprofile").set(authHeader(user));
     expect(res.status).toBe(200);
     expect(res.body).toBeNull();
   });
@@ -165,7 +186,7 @@ describe("GET /api/rider/profile — fetchMyProfile", () => {
       isVerified: true,
       location: { type: "Point", coordinates: [77.5, 28.7] },
     });
-    const res = await request(app).get("/api/rider/profile").set(authHeader(user));
+    const res = await request(app).get("/api/rider/myprofile").set(authHeader(user));
     expect(res.status).toBe(200);
     expect(res.body.phoneNumber).toBe("9876543210");
     expect(res.body.isVerified).toBe(true);
@@ -254,3 +275,70 @@ describe("Geospatial: Rider $near query — only riders within 500m returned", (
     expect(riders.map((r) => r.userId)).not.toContain("rider-offline");
   });
 });
+
+describe("POST /api/rider/new — addRiderProfile", () => {
+  it("returns 201 and creates profile", async () => {
+    const user = makeUser({ role: "rider" });
+    const res = await request(app)
+      .post("/api/rider/new")
+      .set(authHeader(user))
+      .field("phoneNumber", "1234567890")
+      .field("aadharNumber", "1234")
+      .field("drivingLicenseNumber", "DL123")
+      .field("latitude", 28.6)
+      .field("longitude", 77.1)
+      .attach("file", Buffer.from("fake image"), "image.jpg");
+    expect(res.status).toBe(201);
+  });
+});
+
+describe("POST /api/rider/accept/:orderId — acceptOrder", () => {
+  it("accepts order and marks rider unavailable", async () => {
+    const user = makeUser({ role: "rider" });
+    await Rider.create({
+      userId: user._id, picture: "img", phoneNumber: "9876543210",
+      aadharNumber: "0000", drivingLicenseNumber: "DL",
+      isVerified: true, isAvailble: true,
+      location: { type: "Point", coordinates: [77.5, 28.7] },
+    });
+    const res = await request(app)
+      .post("/api/rider/accept/order_123")
+      .set(authHeader(user));
+    expect(res.status).toBe(200);
+    const rider = await Rider.findOne({ userId: user._id });
+    expect(rider?.isAvailble).toBe(false);
+  });
+});
+
+describe("GET /api/rider/order/current — fetchMyCurrentOrder", () => {
+  it("fetches current order", async () => {
+    const user = makeUser({ role: "rider" });
+    await Rider.create({
+      userId: user._id, picture: "img", phoneNumber: "9876543210",
+      aadharNumber: "0000", drivingLicenseNumber: "DL",
+      isVerified: true, isAvailble: false,
+      location: { type: "Point", coordinates: [77.5, 28.7] },
+    });
+    const res = await request(app)
+      .get("/api/rider/order/current")
+      .set(authHeader(user));
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("PUT /api/rider/order/update/:orderId — updateOrderStatus", () => {
+  it("updates order status", async () => {
+    const user = makeUser({ role: "rider" });
+    await Rider.create({
+      userId: user._id, picture: "img", phoneNumber: "9876543210",
+      aadharNumber: "0000", drivingLicenseNumber: "DL",
+      isVerified: true, isAvailble: false,
+      location: { type: "Point", coordinates: [77.5, 28.7] },
+    });
+    const res = await request(app)
+      .put("/api/rider/order/update/order_123")
+      .set(authHeader(user));
+    expect(res.status).toBe(200);
+  });
+});
+

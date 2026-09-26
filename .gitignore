@@ -31,3 +31,18 @@ Thumbs.db
 # MongoDB memory server cache
 .cache/
 **/.cache/
+
+# k6 binary and zip
+k6/
+k6-bin/
+k6.zip
+
+# Test scratch files
+test-*-out.txt
+append_tests.cjs
+jest-mongodb-environment.cjs
+tests/jest.env.js
+
+# Duplicate .js test files (use .ts versions)
+**/tests/*.test.js
+

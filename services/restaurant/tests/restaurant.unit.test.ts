@@ -11,6 +11,7 @@ process.env.INTERNAL_SERVICE_KEY = "test_internal_key";
 process.env.REALTIME_SERVICE = "http://localhost:5004";
 
 import { isAuth, isSeller } from "../src/middlewares/isAuth";
+jest.mock("../src/config/db", () => jest.fn());
 
 // ── helpers ────────────────────────────────────────────────────────────────
 const makeUser = (overrides = {}) => ({

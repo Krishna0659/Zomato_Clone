@@ -1,9 +1,8 @@
 /** @type {import('jest').Config} */
 module.exports = {
   preset: "ts-jest",
-  testEnvironment: "<rootDir>/jest-mongodb-environment.cjs",
+  testEnvironment: "node",
   roots: ["<rootDir>/tests"],
-  testMatch: ["**/*.test.ts"],
   moduleNameMapper: { "^(\\.{1,2}/.*)\\.js$": "$1" },
   transform: {
     "^.+\\.tsx?$": ["ts-jest", {
@@ -17,5 +16,5 @@ module.exports = {
   },
   collectCoverageFrom: ["src/**/*.ts", "!src/index.ts"],
   coverageThreshold: { global: { lines: 80 } },
-  testTimeout: 150000,
+  testTimeout: 30000,
 };

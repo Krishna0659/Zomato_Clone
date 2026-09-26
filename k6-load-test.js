@@ -17,7 +17,7 @@
  */
 
 import http from "k6/http";
-import { check, sleep } from "k6";
+import { check, sleep, fail } from "k6";
 import { Rate, Trend } from "k6/metrics";
 
 // ── Custom metrics ────────────────────────────────────────────────────────
@@ -31,7 +31,7 @@ const BASE_UTILS = __ENV.UTILS_URL || "http://localhost:5002";
 
 // Pre-generated valid JWT for a test user (generated with JWT_SEC=dklsjfoiwjeflsndofj)
 // In CI, replace with a dynamically generated token
-const TEST_TOKEN = __ENV.TEST_TOKEN || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjp7Il9pZCI6IjY2MzEyMzQ1NjdlODlhYmNkZWYxMjM0NSIsIm5hbWUiOiJMb2FkIFRlc3QgVXNlciIsImVtYWlsIjoibG9hZHRlc3RAZXhhbXBsZS5jb20iLCJyb2xlIjoiY3VzdG9tZXIifSwiaWF0IjoxNjAwMDAwMDAwLCJleHAiOjk5OTk5OTk5OTl9.placeholder";
+const TEST_TOKEN = __ENV.TEST_TOKEN || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjp7Il9pZCI6IjY2MzEyMzQ1NjdlODlhYmNkZWYxMjM0NSIsInJvbGUiOiJjdXN0b21lciJ9LCJpYXQiOjE3OTA0MTgyNDZ9.BL2ESUjllXgJsQMBvn-xiTGYdOCJf8tR3dsUStmhuIY";
 
 const AUTH_HEADERS = {
   Authorization: `Bearer ${TEST_TOKEN}`,
@@ -54,10 +54,17 @@ export const options = {
   },
 };
 
+export function setup() {
+  const res = http.get(`${BASE_RESTAURANT}/api/restaurant/all?latitude=28.6&longitude=77.1`, { headers: AUTH_HEADERS });
+  if (res.status !== 200) {
+    fail(`Pre-flight check failed! Server returned ${res.status}: ${res.body}`);
+  }
+}
+
 // ── Scenario: GET /api/cart (high-frequency read) ─────────────────────────
 function testCartFetch() {
   const start = Date.now();
-  const res = http.get(`${BASE_RESTAURANT}/api/cart`, { headers: AUTH_HEADERS });
+  const res = http.get(`${BASE_RESTAURANT}/api/cart/all`, { headers: AUTH_HEADERS });
   cartFetchDuration.add(Date.now() - start);
 
   const ok = check(res, {
@@ -71,7 +78,7 @@ function testCartFetch() {
 
 // ── Scenario: GET /api/restaurant — list all restaurants ─────────────────
 function testRestaurantList() {
-  const res = http.get(`${BASE_RESTAURANT}/api/restaurant`, { headers: AUTH_HEADERS });
+  const res = http.get(`${BASE_RESTAURANT}/api/restaurant/all?latitude=28.6&longitude=77.1`, { headers: AUTH_HEADERS });
 
   const ok = check(res, {
     "restaurant list status is 200": (r) => r.status === 200,
@@ -109,7 +116,7 @@ function testCreateOrder() {
 function testCreateRazorpayOrder() {
   const payload = JSON.stringify({ orderId: "000000000000000000000001" });
   const res = http.post(`${BASE_UTILS}/api/payment/razorpay`, payload, {
-    headers: { ...AUTH_HEADERS, "x-internal-key": "jdfienf12345@@@@##4$$$%%%jsadfjlajdf" },
+    headers: Object.assign({}, AUTH_HEADERS, { "x-internal-key": "jdfienf12345@@@@##4$$$%%%jsadfjlajdf" }),
   });
 
   const ok = check(res, {
@@ -141,11 +148,15 @@ export default function () {
 
 // ── End-of-test summary ───────────────────────────────────────────────────
 export function handleSummary(data) {
-  const p50 = data.metrics.http_req_duration?.values["p(50)"] ?? "N/A";
-  const p95 = data.metrics.http_req_duration?.values["p(95)"] ?? "N/A";
-  const p99 = data.metrics.http_req_duration?.values["p(99)"] ?? "N/A";
-  const errRate = ((data.metrics.error_rate?.values.rate ?? 0) * 100).toFixed(2);
-  const rps = data.metrics.http_reqs?.values.rate?.toFixed(1) ?? "N/A";
+  const reqDuration = data.metrics.http_req_duration ? data.metrics.http_req_duration.values : {};
+  const errorRate = data.metrics.error_rate ? data.metrics.error_rate.values.rate : 0;
+  
+  const p50 = reqDuration["p(50)"] !== undefined ? reqDuration["p(50)"] : "N/A";
+  const p95 = reqDuration["p(95)"] !== undefined ? reqDuration["p(95)"] : "N/A";
+  const p99 = reqDuration["p(99)"] !== undefined ? reqDuration["p(99)"] : "N/A";
+  const errRate = (errorRate * 100).toFixed(2);
+  const rpsReqs = data.metrics.http_reqs ? data.metrics.http_reqs.values : {};
+  const rps = rpsReqs.rate !== undefined ? rpsReqs.rate.toFixed(1) : "N/A";
 
   const summary = `
 ╔══════════════════════════════════════════════╗

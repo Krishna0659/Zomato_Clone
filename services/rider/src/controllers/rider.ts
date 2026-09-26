@@ -194,7 +194,7 @@ export const acceptOrder = TryCatch(async (req: AuthenticatedRequest, res) => {
       `${process.env.RESTAURANT_SERVICE}/api/order/assign/rider`,
       {
         orderId,
-        riderId: rider._id.toString(),
+        riderId: (rider as any)._id.toString(),
         riderUserId: rider.userId,
         riderName: rider.picture,
         riderPhone: rider.phoneNumber,

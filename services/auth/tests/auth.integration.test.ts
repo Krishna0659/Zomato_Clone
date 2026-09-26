@@ -32,12 +32,25 @@ const signToken = (user: object) =>
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────
 beforeAll(async () => {
-  await mongoose.connect(MONGO_URI);
+  let retries = 5;
+  while (retries > 0) {
+    try {
+      await mongoose.connect(MONGO_URI);
+      break;
+    } catch (err) {
+      retries -= 1;
+      console.log(`Mongoose connection failed. Retries left: ${retries}`);
+      if (retries === 0) throw err;
+      await new Promise((res) => setTimeout(res, 2000));
+    }
+  }
   app = buildApp();
-}, 30000);
+}, 60000);
 
 afterAll(async () => {
-  await mongoose.connection.dropDatabase();
+  if (mongoose.connection.readyState !== 0) {
+    await mongoose.connection.dropDatabase();
+  }
   await mongoose.disconnect();
 }, 15000);
 

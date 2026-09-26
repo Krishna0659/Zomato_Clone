@@ -109,7 +109,7 @@ export const createOrder = TryCatch(async (req: AuthenticatedRequest, res) => {
     subtotal += itemTotal;
 
     return {
-      itemId: item._id.toString(),
+      itemId: (item as any)._id.toString(),
       name: item.name,
       price: item.price,
       quauntity: cart.quauntity,
@@ -128,7 +128,7 @@ export const createOrder = TryCatch(async (req: AuthenticatedRequest, res) => {
 
   const order = await Order.create({
     userId: user._id.toString(),
-    restaurantId: restaurantId.toString(),
+    restaurantId: (restaurantId as any).toString(),
     restaurantName: restaurant.name,
     riderId: null,
     distance,
@@ -138,7 +138,7 @@ export const createOrder = TryCatch(async (req: AuthenticatedRequest, res) => {
     deliveryFee,
     platfromFee,
     totalAmount,
-    addressId: address._id.toString(),
+    addressId: (address as any)._id.toString(),
     deliveryAddress: {
       fromattedAddress: address.formattedAddress,
       mobile: address.mobile,
@@ -156,7 +156,7 @@ export const createOrder = TryCatch(async (req: AuthenticatedRequest, res) => {
 
   res.json({
     message: "Order created successfully",
-    orderId: order._id.toString(),
+    orderId: (order as any)._id.toString(),
     amount: totalAmount,
   });
 });
@@ -302,8 +302,8 @@ export const updateOrderStatus = TryCatch(
       );
 
       await publishEvent("ORDER_READY_FOR_RIDER", {
-        orderId: order._id.toString(),
-        restaurantId: restaurant._id.toString(),
+        orderId: (order as any)._id.toString(),
+        restaurantId: (restaurant as any)._id.toString(),
         location: restaurant.autoLocation,
       });
 

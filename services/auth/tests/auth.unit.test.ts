@@ -11,6 +11,7 @@ process.env.JWT_SEC = "test_jwt_secret_for_unit_tests";
 process.env.MONGO_URI = "mongodb://127.0.0.1/test";
 
 // ── middleware under test ──────────────────────────────────────────────────
+jest.mock("../src/config/db", () => jest.fn());
 import { isAuth } from "../src/middlewares/isAuth";
 
 // ── helpers ────────────────────────────────────────────────────────────────
